@@ -4,4 +4,4 @@ gunicorn
 pandas
 python-dotenv
 google-generativeai
-
+python-multipart
