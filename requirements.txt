@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+gunicorn
 pandas
 python-dotenv
 google-generativeai
