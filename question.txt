@@ -1,1 +1,2 @@
+Get the top 5 countries with highest GDP from a given CSV file containing country and GDP columns, and return the result in a DataFrame called df.
 
