@@ -64,7 +64,7 @@ def execute_code(code):
 
 
 
-def feedback_loop(prompt, max_attempts=3):
+def feedback_loop(prompt, max_attempts=5):
     error_message = ""
     for attempt in range(max_attempts):
         full_prompt = f"Previous error:\n{error_message}\n\n{prompt}" if error_message else prompt
