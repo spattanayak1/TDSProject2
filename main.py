@@ -75,11 +75,14 @@ def feedback_loop(prompt, max_attempts=3):
             error_message = f"Error parsing packages/code: {str(e)}"
             continue
 
-        df, error = execute_code(code)
-        if df is not None:
-            return df
+        df, error, executed_code = execute_code(code)
 
-        error_message = f"Error during code execution: {error}"
+        if df is not None:
+            return df, executed_code
+
+
+        error_message = f"Error during code execution:\n{error}\n\nExecuted code:\n{code}"
+
 
     # After all attempts fail, raise the last known error
     raise RuntimeError(f"Failed after multiple attempts.\nLast error: {error_message}")
