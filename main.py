@@ -63,22 +63,19 @@ def feedback_loop(prompt, max_attempts=3):
 
         try:
             packages, code = parse_packages_and_code(response_text)
-
-            # Save packages to requirements.txt
-            # with open("requirements.txt", "w") as f:
-            #     for pkg in packages:
-            #         f.write(pkg + "\n")
-
-            # install_packages(packages)
         except Exception as e:
-            error_message = str(e)
+            error_message = f"Error parsing packages/code: {str(e)}"
             continue
 
         df, error = execute_code(code)
         if df is not None:
             return df
-        error_message = error
-    raise RuntimeError("Failed after multiple attempts.")
+
+        error_message = f"Error during code execution: {error}"
+
+    # After all attempts fail, raise the last known error
+    raise RuntimeError(f"Failed after multiple attempts.\nLast error: {error_message}")
+
 
 @app.post("/api/")
 async def analyze(file: UploadFile = File(...)):
