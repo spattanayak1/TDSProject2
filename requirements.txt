@@ -11,7 +11,6 @@ requests
 beautifulsoup4
 lxml
 selenium
-PyMuPDF==1.23.7
 pdfplumber
 pypdf
 pytesseract
