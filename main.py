@@ -50,10 +50,17 @@ def execute_code(code):
     local_vars = {}
     try:
         exec(code, local_vars)
-        df = local_vars.get("df")
-        return df, None if isinstance(df, pd.DataFrame) else "Code executed, but `df` not found or not a DataFrame."
+
+        # Try to find any DataFrame in the result
+        for var_name, var_value in local_vars.items():
+            if isinstance(var_value, pd.DataFrame):
+                print(f"✅ Found DataFrame in variable: {var_name}")
+                return var_value, None
+
+        return None, "Code executed, but no DataFrame found in variables."
     except Exception:
         return None, traceback.format_exc()
+
 
 def feedback_loop(prompt, max_attempts=3):
     error_message = ""
