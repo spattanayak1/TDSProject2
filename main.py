@@ -49,9 +49,9 @@ def install_packages(package_list):
 def execute_code(code):
     local_vars = {}
     try:
-        exec(code, {}, local_vars)
+        exec(code, local_vars)
         df = local_vars.get("df")
-        return df, None if isinstance(df, pd.DataFrame) else "No DataFrame named `df` returned."
+        return df, None if isinstance(df, pd.DataFrame) else "Code executed, but `df` not found or not a DataFrame."
     except Exception:
         return None, traceback.format_exc()
 
@@ -65,11 +65,11 @@ def feedback_loop(prompt, max_attempts=3):
             packages, code = parse_packages_and_code(response_text)
 
             # Save packages to requirements.txt
-            with open("requirements.txt", "w") as f:
-                for pkg in packages:
-                    f.write(pkg + "\n")
+            # with open("requirements.txt", "w") as f:
+            #     for pkg in packages:
+            #         f.write(pkg + "\n")
 
-            install_packages(packages)
+            # install_packages(packages)
         except Exception as e:
             error_message = str(e)
             continue
