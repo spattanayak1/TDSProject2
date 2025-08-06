@@ -23,8 +23,7 @@ def generate_code_and_dependencies(prompt):
         f"Write a complete Python script to do the following:\n{prompt}\n\n"
         "Return two outputs:\n"
         "1. A Python list of all external packages needed (only the package names).\n"
-        "2. The full code (no markdown formatting).Generate Python code that in such way that the rusult of code will return a pandas DataFrame .
-\n\n"
+        "2. The full code (no markdown formatting).Generate Python code that in such way that the rusult of code will return a pandas DataFrame.\n"
         "Format your output exactly like:\n"
         "PACKAGES:\n['package1', 'package2']\n\nCODE:\n<code starts here>"
     )
