@@ -20,9 +20,9 @@ app = FastAPI()
 
 def generate_code_and_dependencies(prompt):
     full_prompt = (
-        f"You are a Python automation expert. The task might involve reading from Excel, PDF, website scraping, images, JSON, CSV, or other files. \n"
+        "You are a Python automation expert. The task might involve reading from Excel, PDF, website scraping, images, JSON, CSV, or other files. \n"
         "If there is image needs to be in output , you should convert to base64 while return. \n"
-        "Your main job is to Write a complete Python script to do the following:\n{prompt}\n\n"
+        f"Your main job is to Write a complete Python script to do the following:\n{prompt}\n\n"
         "Return two outputs:\n"
         "1. A Python list of all external packages needed (only the package names).\n"
         "2. The full code (no markdown formatting).\n"
