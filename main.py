@@ -55,11 +55,12 @@ def execute_code(code):
         for var_name, var_value in local_vars.items():
             if isinstance(var_value, pd.DataFrame):
                 print(f"✅ Found DataFrame in variable: {var_name}")
-                return var_value, None
+                return var_value, None, code
 
-        return None, "Code executed, but no DataFrame found in variables."
+        return None, "Code executed, but no DataFrame found in variables.", code
     except Exception:
-        return None, traceback.format_exc()
+        return None, traceback.format_exc(), code
+
 
 
 def feedback_loop(prompt, max_attempts=3):
