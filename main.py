@@ -93,7 +93,7 @@ async def analyze(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         prompt = contents.decode("utf-8").strip()
-        df = feedback_loop(prompt)
+        df, code = feedback_loop(prompt)  # ✅ Unpack both df and code
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8") as tmp:
             df.to_json(tmp.name, orient="records", indent=2)
@@ -101,8 +101,12 @@ async def analyze(file: UploadFile = File(...)):
             tmp.seek(0)
             json_output = pd.read_json(tmp.name)
 
-        return JSONResponse(content=json_output.to_dict(orient="records"))
+        return JSONResponse(content={
+            "data": json_output.to_dict(orient="records"),
+            "executed_code": code
+        })
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
