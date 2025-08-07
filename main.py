@@ -21,6 +21,7 @@ app = FastAPI()
 def generate_code_and_dependencies(prompt):
     full_prompt = (
         "You are a Python automation expert. The task might involve reading from Excel, PDF, website scraping, images, JSON, CSV, or other files. \n"
+        "if prompt contains url,Generate Python code to scrape match scorecards from [URL], but ensure the code includes appropriate headers such as User-Agent to avoid a 403 Forbidden error. Use the requests and BeautifulSoup libraries only.\n"
         "If there is image needs to be in output , you should convert to base64 while return. \n"
         f"Your main job is to Write a complete Python script to do the following:\n{prompt}\n\n"
         "Return two outputs:\n"
