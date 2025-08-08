@@ -27,8 +27,11 @@ def generate_code_and_dependencies(prompt):
         "PACKAGES:\n['package1', 'package2']\n\nCODE:\n<code starts here>"
     )
     response = client.responses.create(
-        model="gpt-4o-mini",
-        input=full_prompt
+    model="gpt-5-nano",
+    input="full_prompt",
+    reasoning_effort="minimal",      # Optional: tune for speed vs reasoning
+    verbosity="low"                  # Optional: shorter answer
+    )
     return response.text
 
 def parse_packages_and_code(response_text):
