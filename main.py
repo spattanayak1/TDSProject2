@@ -12,11 +12,7 @@ import google.generativeai as genai
 import pandas as pd
 
 # Load environment variables
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-
-
-model = genai.GenerativeModel("gemini-1.5-flash")
-app = FastAPI()
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 def generate_code_and_dependencies(prompt):
     full_prompt = (
@@ -30,7 +26,9 @@ def generate_code_and_dependencies(prompt):
         "Format your output exactly like:\n"
         "PACKAGES:\n['package1', 'package2']\n\nCODE:\n<code starts here>"
     )
-    response = model.generate_content(full_prompt)
+    response = client.responses.create(
+        model="gpt-4o-mini",
+        input=full_prompt
     return response.text
 
 def parse_packages_and_code(response_text):
