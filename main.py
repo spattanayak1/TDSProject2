@@ -14,6 +14,8 @@ from openai import OpenAI
 
 # Load environment variables
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+app = FastAPI()
+
 
 def generate_code_and_dependencies(prompt):
     full_prompt = (
