@@ -19,23 +19,25 @@ app = FastAPI()
 
 def generate_code_and_dependencies(prompt):
     full_prompt = (
-        "You are a Python automation expert. The task might involve reading from Excel, PDF, website scraping, images, JSON, CSV, or other files. \n"
-        "If there is image needs to be in output , you should convert to base64 while return. \n"
+        "You are a Python automation expert. The task might involve reading from Excel, PDF, website scraping, images, JSON, CSV, or other files.\n"
+        "If there is image needs to be in output , you should convert to base64 while return.\n"
         f"Your main job is to Write a complete Python script to do the following:\n{prompt}\n\n"
         "Return two outputs:\n"
         "1. A Python list of all external packages needed (only the package names).\n"
         "2. The full code (no markdown formatting).\n"
-        "Generate Python code that in such way that the rusult of code will return a pandas DataFrame.\n"
+        "Generate Python code that in such way that the result of code will return a pandas DataFrame. "
+        "The DataFrame MUST be assigned to a variable named `df` in the global scope of the executed code.\n"
         "Format your output exactly like:\n"
         "PACKAGES:\n['package1', 'package2']\n\nCODE:\n<code starts here>"
     )
+
     response = client.responses.create(
-    model="gpt-5-nano",
-    input="full_prompt",
-    reasoning_effort="minimal",      # Optional: tune for speed vs reasoning
-    verbosity="low"                  # Optional: shorter answer
+        model="gpt-5-nano",  # or another model you want
+        input=full_prompt
     )
-    return response.text
+
+    return response.output_text
+
 
 def parse_packages_and_code(response_text):
     try:
