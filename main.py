@@ -51,7 +51,7 @@ def execute_code(code: str):
     except Exception as e:
         return None, f"Execution error: {str(e)}", code
 
-def feedback_loop(prompt: str, max_attempts=2):
+def feedback_loop(prompt: str, max_attempts=5):
     error_message = ""
     for attempt in range(max_attempts):
         full_prompt = f"Fix the code based on this error:\n{error_message}\nTask:\n{prompt}" if error_message else prompt
@@ -70,8 +70,7 @@ async def analyze(file: UploadFile = File(...)):
         json_result, executed_code = feedback_loop(prompt)
 
         return JSONResponse(content={
-            "data": json_result,
-            "executed_code": executed_code
+            "data": json_result
         })
 
     except Exception as e:
