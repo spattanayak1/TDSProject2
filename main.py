@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 import google.generativeai as genai
 import pandas as pd
+from openai import OpenAI
 
 # Load environment variables
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
