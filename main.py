@@ -1,121 +1,79 @@
 import os
 import sys
-import re
 import traceback
-import subprocess
-import tempfile
-
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
-import google.generativeai as genai
-import pandas as pd
 from openai import OpenAI
 
-# Load environment variables
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 app = FastAPI()
 
+# Read API key from environment variable set in Render or your env
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY environment variable not set")
 
-def generate_code_and_dependencies(prompt):
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+def generate_code(prompt: str) -> str:
     full_prompt = (
-        "You are a Python automation expert. The task might involve reading from Excel, PDF, website scraping, images, JSON, CSV, or other files.\n"
-        "If there is image needs to be in output , you should convert to base64 while return.\n"
-        f"Your main job is to Write a complete Python script to do the following:\n{prompt}\n\n"
-        "Return two outputs:\n"
-        "1. A Python list of all external packages needed (only the package names).\n"
-        "2. The full code (no markdown formatting).\n"
-        "Generate Python code that in such way that the result of code will return a pandas DataFrame. "
-        "The DataFrame MUST be assigned to a variable named `df` in the global scope of the executed code.\n"
-        "Format your output exactly like:\n"
-        "PACKAGES:\n['package1', 'package2']\n\nCODE:\n<code starts here>"
+        "You are a Python automation expert. "
+        "Write a complete Python script to do the following task:\n"
+        f"{prompt}\n\n"
+        "The script must:\n"
+        "- Assign the final result to a variable named result_json.\n"
+        "- The format of result_json must match exactly the format requested in the question.\n"
+        "- Do not print anything. No explanations, no markdown, no logs.\n"
+        "- Use only built-in Python libraries (no pip installs).\n"
+        "- Output ONLY the Python code, nothing else."
     )
 
     response = client.responses.create(
-        model="gpt-5-nano",  # or another model you want
+        model="gpt-5-nano",
         input=full_prompt
     )
+    return response.output_text.strip()
 
-    return response.output_text
-
-
-def parse_packages_and_code(response_text):
+def execute_code(code: str):
     try:
-        packages_section = re.search(r'PACKAGES:\n(\[.*?\])', response_text, re.DOTALL).group(1)
-        code_section = re.search(r'CODE:\n(.+)', response_text, re.DOTALL).group(1)
-        packages = eval(packages_section.strip())
-        return packages, code_section.strip()
+        namespace = {}
+        exec(code, namespace)
+
+        if "result_json" in namespace:
+            return namespace["result_json"], None, code
+
+        if "main" in namespace and callable(namespace["main"]):
+            result = namespace["main"]()
+            if result is None and "result_json" in namespace:
+                return namespace["result_json"], None, code
+            return result, None, code
+
+        return None, "No 'result_json' variable or callable main() found", code
     except Exception as e:
-        raise ValueError(f"Parsing error: {e}\n\nResponse was:\n{response_text}")
+        return None, f"Execution error: {str(e)}", code
 
-def install_packages(package_list):
-    for pkg in package_list:
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-        except subprocess.CalledProcessError:
-            print(f"Failed to install: {pkg}")
-
-def execute_code(code):
-    local_vars = {}
-    try:
-        exec(code, local_vars)
-
-        # Try to find any DataFrame in the result
-        for var_name, var_value in local_vars.items():
-            if isinstance(var_value, pd.DataFrame):
-                print(f"✅ Found DataFrame in variable: {var_name}")
-                return var_value, None, code
-
-        return None, "Code executed, but no DataFrame found in variables.", code
-    except Exception:
-        return None, traceback.format_exc(), code
-
-
-
-def feedback_loop(prompt, max_attempts=5):
+def feedback_loop(prompt: str, max_attempts=2):
     error_message = ""
     for attempt in range(max_attempts):
-        full_prompt = f"Previous error:\n{error_message}\n\n{prompt}" if error_message else prompt
-        response_text = generate_code_and_dependencies(full_prompt)
-
-        try:
-            packages, code = parse_packages_and_code(response_text)
-        except Exception as e:
-            error_message = f"Error parsing packages/code: {str(e)}"
-            continue
-
-        df, error, executed_code = execute_code(code)
-
-        if df is not None:
-            return df, executed_code
-
-
-        error_message = f"Error during code execution:\n{error}\n\nExecuted code:\n{code}"
-
-
-    # After all attempts fail, raise the last known error
+        full_prompt = f"Fix the code based on this error:\n{error_message}\nTask:\n{prompt}" if error_message else prompt
+        code = generate_code(full_prompt)
+        json_result, error, executed_code = execute_code(code)
+        if error is None:
+            return json_result, executed_code
+        error_message = f"{error}\n\nCode:\n{code}"
     raise RuntimeError(f"Failed after multiple attempts.\nLast error: {error_message}")
-
 
 @app.post("/api/")
 async def analyze(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         prompt = contents.decode("utf-8").strip()
-        df, code = feedback_loop(prompt)  # ✅ Unpack both df and code
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8") as tmp:
-            df.to_json(tmp.name, orient="records", indent=2)
-            tmp.flush()
-            tmp.seek(0)
-            json_output = pd.read_json(tmp.name)
+        json_result, executed_code = feedback_loop(prompt)
 
         return JSONResponse(content={
-            "data": json_output.to_dict(orient="records"),
-            "executed_code": code
+            "data": json_result,
+            "executed_code": executed_code
         })
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
+        tb_str = traceback.format_exc()
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb_str})
