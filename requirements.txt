@@ -29,4 +29,9 @@ langchain
 python-multipart
 python-dotenv
 tqdm
+unstructured
+docx2txt
+json5
+tabula-py
+PyYAML
 
