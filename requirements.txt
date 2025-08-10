@@ -34,4 +34,5 @@ docx2txt
 json5
 tabula-py
 PyYAML
-
+python-docx
+PyPDF2
