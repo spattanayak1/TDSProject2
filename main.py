@@ -101,28 +101,49 @@ def call_openai_chat(prompt: str):
     return assistant_reply
 
 
-@app.post("/api/")
-async def analyze(file: UploadFile = File(...)):
-    try:
-        contents = await file.read()
-        prompt = contents.decode("utf-8").strip()
+from typing import List, Optional
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+import os
+import traceback
+import json
 
-        # Try to generate and execute Python code up to 4 times
+@app.post("/api/")
+async def analyze(
+    questions: UploadFile = File(..., description="The main questions.txt file"),
+    extra_files: Optional[List[UploadFile]] = File(None, description="Optional additional files like CSVs or PNGs")
+):
+    try:
+        # Read main questions.txt
+        questions_content = await questions.read()
+        prompt = questions_content.decode("utf-8").strip()
+
+        # Read and process extra files (if any)
+        files_data = {}
+        if extra_files:
+            for file in extra_files:
+                content = await file.read()
+                files_data[file.filename] = content  # keep raw bytes
+
+        # Pass the prompt + metadata about extra files into the model
+        if files_data:
+            prompt += "\n\nAdditional files included:\n"
+            for fname in files_data:
+                prompt += f"- {fname} ({len(files_data[fname])} bytes)\n"
+
+        # Try code-gen + execution loop
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
 
         if json_result is not None:
-            # Success, return JSON result
             return JSONResponse(content={"data": json_result})
 
-        # After 4 failed attempts, call OpenAI chat completion fallback (senior data analyst style)
+        # Fallback to chat
         fallback_response = call_openai_chat(prompt)
 
-        # Try to parse fallback response as JSON and return
         try:
             parsed = json.loads(fallback_response)
             return JSONResponse(content={"data": parsed})
         except json.JSONDecodeError:
-            # If fallback output is not valid JSON, return raw string with error status
             return JSONResponse(
                 status_code=500,
                 content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response}
