@@ -1,12 +1,20 @@
 import os
 import traceback
+from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 import json
+import csv
+import io
+import base64
+import xml.etree.ElementTree as ET
+import PyPDF2  # Built-in to some Python environments, if not, handle as bytes
+from zipfile import ZipFile
 
 app = FastAPI()
 
+# ==== CONFIG ====
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY environment variable not set")
@@ -39,6 +47,51 @@ Response formatting rules:
 Only return valid JSON. Be accurate, structured, and concise.
 Don't give sentences, give me just the data, numbers and the things User asked for.
 """
+
+# ==== FILE HANDLING ====
+
+def process_file(fname: str, content: bytes):
+    """Detect file type and return structured content for prompt."""
+    lower_name = fname.lower()
+    try:
+        if lower_name.endswith(".png") or lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
+            return f"data:image/{'png' if 'png' in lower_name else 'jpeg'};base64,{base64.b64encode(content).decode('utf-8')}"
+        elif lower_name.endswith(".csv"):
+            csv_text = content.decode("utf-8", errors="ignore")
+            reader = csv.reader(io.StringIO(csv_text))
+            return list(reader)
+        elif lower_name.endswith(".json"):
+            return json.loads(content.decode("utf-8", errors="ignore"))
+        elif lower_name.endswith(".xml"):
+            xml_text = content.decode("utf-8", errors="ignore")
+            tree = ET.ElementTree(ET.fromstring(xml_text))
+            return ET.tostring(tree.getroot(), encoding="unicode")
+        elif lower_name.endswith(".pdf"):
+            try:
+                reader = PyPDF2.PdfReader(io.BytesIO(content))
+                text = "\n".join([page.extract_text() or "" for page in reader.pages])
+                return text.strip()
+            except:
+                return "<PDF could not be extracted>"
+        elif lower_name.endswith(".zip"):
+            try:
+                with ZipFile(io.BytesIO(content)) as zf:
+                    file_list = zf.namelist()
+                    return {"zip_contents": file_list}
+            except:
+                return "<ZIP file could not be processed>"
+        elif lower_name.endswith(".txt"):
+            return content.decode("utf-8", errors="ignore")
+        else:
+            # Generic fallback
+            try:
+                return content.decode("utf-8", errors="ignore")
+            except:
+                return f"<Binary file {fname}, {len(content)} bytes>"
+    except Exception as e:
+        return f"<Error processing {fname}: {str(e)}>"
+
+# ==== GPT HELPERS ====
 
 def generate_code(prompt: str) -> str:
     full_prompt = (
@@ -84,9 +137,9 @@ async def feedback_loop(prompt: str, max_attempts=4):
         code = generate_code(full_prompt)
         json_result, error, executed_code = execute_code(code)
         if error is None:
-            return json_result, executed_code, None  # Success, no error
+            return json_result, executed_code, None
         error_message = f"{error}\n\nCode:\n{code}"
-    return None, None, error_message  # Failure after max attempts
+    return None, None, error_message
 
 def call_openai_chat(prompt: str):
     response = client.chat.completions.create(
@@ -97,39 +150,32 @@ def call_openai_chat(prompt: str):
         ],
         temperature=0.2
     )
-    assistant_reply = response.choices[0].message.content.strip()
-    return assistant_reply
+    return response.choices[0].message.content.strip()
 
-
-from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-import os
-import traceback
-import json
+# ==== API ENDPOINT ====
 
 @app.post("/api/")
 async def analyze(
     questions: UploadFile = File(..., description="The main questions.txt file"),
-    extra_files: Optional[List[UploadFile]] = File(None, description="Optional additional files like CSVs or PNGs")
+    extra_files: Optional[List[UploadFile]] = File(None, description="Optional additional files (any type)")
 ):
     try:
         # Read main questions.txt
         questions_content = await questions.read()
-        prompt = questions_content.decode("utf-8").strip()
+        prompt = questions_content.decode("utf-8", errors="ignore").strip()
 
-        # Read and process extra files (if any)
+        # Process extra files
         files_data = {}
         if extra_files:
             for file in extra_files:
                 content = await file.read()
-                files_data[file.filename] = content  # keep raw bytes
+                files_data[file.filename] = process_file(file.filename, content)
 
-        # Pass the prompt + metadata about extra files into the model
+        # Append processed file info & data to prompt
         if files_data:
-            prompt += "\n\nAdditional files included:\n"
-            for fname in files_data:
-                prompt += f"- {fname} ({len(files_data[fname])} bytes)\n"
+            prompt += "\n\nAttached Files:\n"
+            for fname, data in files_data.items():
+                prompt += f"- {fname}:\n{data}\n"
 
         # Try code-gen + execution loop
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
@@ -137,9 +183,8 @@ async def analyze(
         if json_result is not None:
             return JSONResponse(content={"data": json_result})
 
-        # Fallback to chat
+        # Fallback to chat mode
         fallback_response = call_openai_chat(prompt)
-
         try:
             parsed = json.loads(fallback_response)
             return JSONResponse(content={"data": parsed})
