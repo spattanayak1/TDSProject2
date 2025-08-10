@@ -11,6 +11,13 @@ import base64
 import xml.etree.ElementTree as ET
 import PyPDF2  # Built-in to some Python environments, if not, handle as bytes
 from zipfile import ZipFile
+import xml.etree.ElementTree as ET
+import pdfplumber
+import pandas as pd
+import pytesseract
+from PIL import Image
+import docx
+from zipfile import ZipFile
 
 app = FastAPI()
 
@@ -54,40 +61,66 @@ def process_file(fname: str, content: bytes):
     """Detect file type and return structured content for prompt."""
     lower_name = fname.lower()
     try:
-        if lower_name.endswith(".png") or lower_name.endswith(".jpg") or lower_name.endswith(".jpeg"):
-            return f"data:image/{'png' if 'png' in lower_name else 'jpeg'};base64,{base64.b64encode(content).decode('utf-8')}"
+        # Images → OCR
+        if lower_name.endswith((".png", ".jpg", ".jpeg")):
+            image = Image.open(io.BytesIO(content))
+            text = pytesseract.image_to_string(image)
+            return text.strip()
+
+        # CSV
         elif lower_name.endswith(".csv"):
-            csv_text = content.decode("utf-8", errors="ignore")
-            reader = csv.reader(io.StringIO(csv_text))
-            return list(reader)
+            df = pd.read_csv(io.BytesIO(content))
+            return df.to_dict(orient="records")
+
+        # Excel
+        elif lower_name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(content))
+            return df.to_dict(orient="records")
+
+        # JSON
         elif lower_name.endswith(".json"):
             return json.loads(content.decode("utf-8", errors="ignore"))
+
+        # XML
         elif lower_name.endswith(".xml"):
             xml_text = content.decode("utf-8", errors="ignore")
             tree = ET.ElementTree(ET.fromstring(xml_text))
             return ET.tostring(tree.getroot(), encoding="unicode")
+
+        # PDF
         elif lower_name.endswith(".pdf"):
-            try:
-                reader = PyPDF2.PdfReader(io.BytesIO(content))
-                text = "\n".join([page.extract_text() or "" for page in reader.pages])
-                return text.strip()
-            except:
-                return "<PDF could not be extracted>"
+            pdf_text = []
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        pdf_text.append(page_text)
+            return "\n".join(pdf_text).strip()
+
+        # DOCX
+        elif lower_name.endswith(".docx"):
+            doc_obj = docx.Document(io.BytesIO(content))
+            return "\n".join([p.text for p in doc_obj.paragraphs])
+
+        # ZIP
         elif lower_name.endswith(".zip"):
             try:
                 with ZipFile(io.BytesIO(content)) as zf:
-                    file_list = zf.namelist()
-                    return {"zip_contents": file_list}
+                    return {"zip_contents": zf.namelist()}
             except:
                 return "<ZIP file could not be processed>"
+
+        # TXT
         elif lower_name.endswith(".txt"):
             return content.decode("utf-8", errors="ignore")
+
+        # Fallback
         else:
-            # Generic fallback
             try:
                 return content.decode("utf-8", errors="ignore")
             except:
                 return f"<Binary file {fname}, {len(content)} bytes>"
+
     except Exception as e:
         return f"<Error processing {fname}: {str(e)}>"
 
