@@ -16,7 +16,6 @@ import pandas as pd
 import pytesseract
 from PIL import Image
 import docx
-import matplotlib.pyplot as plt
 
 app = FastAPI()
 
@@ -47,7 +46,6 @@ Instructions:
 
 Response formatting rules:
 - Always return the JSON exactly as instructed by the request.
-- If a response structure is provided (e.g., JSON array or object), strictly follow it.
 - If a plot is requested, return a base64-encoded data URI string (e.g., "data:image/png;base64,..."), and ensure it's under 100,000 bytes when instructed.
 
 Only return valid JSON. Be accurate, structured, and concise.
@@ -103,14 +101,7 @@ def process_file(fname: str, content: bytes):
 
 # ==== IMAGE ENCODING ====
 def encode_image_to_data_uri(image_obj):
-    """Convert a PIL Image, matplotlib figure, or image bytes to base64 data URI under 100KB."""
-    # Handle matplotlib figure
-    if "matplotlib" in str(type(image_obj)):
-        buf = io.BytesIO()
-        image_obj.savefig(buf, format="PNG", bbox_inches="tight")
-        plt.close(image_obj)
-        image_obj = Image.open(io.BytesIO(buf.getvalue()))
-
+    """Convert a PIL Image or image bytes to base64 data URI under 100KB."""
     if isinstance(image_obj, Image.Image):
         buffer = io.BytesIO()
         image_obj.save(buffer, format="PNG", optimize=True)
@@ -215,32 +206,24 @@ async def analyze(request: Request):
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
 
         if json_result is not None:
-            # Flatten so keys are at top level, and encode images
+            # 🔹 Convert images to base64 data URIs under 100KB
             if isinstance(json_result, dict):
-                flat_result = {}
                 for k, v in json_result.items():
-                    if isinstance(v, (Image.Image, bytes)) or "matplotlib" in str(type(v)):
-                        flat_result[k] = encode_image_to_data_uri(v)
-                    else:
-                        flat_result[k] = v
-                return JSONResponse(content=flat_result)
+                    if isinstance(v, Image.Image) or isinstance(v, bytes):
+                        json_result[k] = encode_image_to_data_uri(v)
             elif isinstance(json_result, list):
-                flat_list = []
-                for item in json_result:
-                    if isinstance(item, (Image.Image, bytes)) or "matplotlib" in str(type(item)):
-                        flat_list.append(encode_image_to_data_uri(item))
-                    else:
-                        flat_list.append(item)
-                return JSONResponse(content={"result": flat_list})
+                for i, item in enumerate(json_result):
+                    if isinstance(item, Image.Image) or isinstance(item, bytes):
+                        json_result[i] = encode_image_to_data_uri(item)
 
-        # Fallback to chat
+            # ✅ Flatten output
+            return JSONResponse(content=json_result)
+
         fallback_response = call_openai_chat(prompt)
         try:
             parsed = json.loads(fallback_response)
-            # Flatten fallback too
-            if isinstance(parsed, dict):
-                return JSONResponse(content=parsed)
-            return JSONResponse(content={"result": parsed})
+            # ✅ Flatten output here as well
+            return JSONResponse(content=parsed)
         except json.JSONDecodeError:
             return JSONResponse(
                 status_code=500,
