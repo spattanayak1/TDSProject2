@@ -36,3 +36,4 @@ tabula-py
 PyYAML
 python-docx
 PyPDF2
+matplotlib
