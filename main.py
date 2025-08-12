@@ -18,6 +18,11 @@ import pytesseract
 from PIL import Image
 import docx
 from zipfile import ZipFile
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from typing import Optional
+import traceback
+import json
 
 app = FastAPI()
 
