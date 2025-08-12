@@ -9,13 +9,14 @@ import csv
 import io
 import base64
 import xml.etree.ElementTree as ET
-import PyPDF2
 from zipfile import ZipFile
 import pdfplumber
 import pandas as pd
 import pytesseract
 from PIL import Image
 import docx
+import matplotlib.pyplot as plt
+import networkx as nx
 
 app = FastAPI()
 
@@ -100,27 +101,41 @@ def process_file(fname: str, content: bytes):
         return f"<Error processing {fname}: {str(e)}>"
 
 # ==== IMAGE ENCODING ====
-def encode_image_to_data_uri(image_obj):
-    """Convert a PIL Image or image bytes to base64 data URI under 100KB."""
-    if isinstance(image_obj, Image.Image):
-        buffer = io.BytesIO()
-        image_obj.save(buffer, format="PNG", optimize=True)
-        image_bytes = buffer.getvalue()
-    elif isinstance(image_obj, bytes):
-        image_bytes = image_obj
-        image_obj = Image.open(io.BytesIO(image_bytes))
-    else:
-        raise ValueError("Unsupported image format for base64 encoding")
+def encode_image_to_data_uri(fig):
+    """Convert a Matplotlib figure to base64 data URI under 100KB."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    image_bytes = buf.getvalue()
 
-    quality = 95
-    while len(image_bytes) > 100_000 and quality > 10:
-        buffer = io.BytesIO()
-        image_obj.save(buffer, format="PNG", optimize=True, quality=quality)
-        image_bytes = buffer.getvalue()
-        quality -= 5
+    # Resize quality until under 100KB
+    while len(image_bytes) > 100_000:
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
+        image_bytes = buf.getvalue()
 
     base64_str = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:image/png;base64,{base64_str}"
+
+# ==== GRAPH PLOTTING ====
+def generate_network_graph(edges):
+    G = nx.Graph()
+    G.add_edges_from(edges)
+    fig, ax = plt.subplots(figsize=(5, 5))
+    pos = nx.spring_layout(G)
+    nx.draw(G, pos, with_labels=True, node_color="skyblue", node_size=700, font_size=10, ax=ax)
+    return encode_image_to_data_uri(fig)
+
+def generate_degree_histogram(edges):
+    G = nx.Graph()
+    G.add_edges_from(edges)
+    degrees = [deg for _, deg in G.degree()]
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.bar(range(len(degrees)), degrees, color="green")
+    ax.set_xlabel("Node Index")
+    ax.set_ylabel("Degree")
+    ax.set_title("Degree Distribution")
+    return encode_image_to_data_uri(fig)
 
 # ==== GPT HELPERS ====
 def generate_code(prompt: str) -> str:
@@ -206,23 +221,21 @@ async def analyze(request: Request):
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
 
         if json_result is not None:
-            # 🔹 Convert images to base64 data URIs under 100KB
-            if isinstance(json_result, dict):
-                for k, v in json_result.items():
-                    if isinstance(v, Image.Image) or isinstance(v, bytes):
-                        json_result[k] = encode_image_to_data_uri(v)
-            elif isinstance(json_result, list):
-                for i, item in enumerate(json_result):
-                    if isinstance(item, Image.Image) or isinstance(item, bytes):
-                        json_result[i] = encode_image_to_data_uri(item)
+            # Generate actual plots if edge list exists
+            if "edges" in json_result and isinstance(json_result["edges"], list):
+                json_result["network_graph"] = generate_network_graph(json_result["edges"])
+                json_result["degree_histogram"] = generate_degree_histogram(json_result["edges"])
+                del json_result["edges"]  # Remove raw edges if not needed in output
 
-            # ✅ Flatten output
             return JSONResponse(content=json_result)
 
         fallback_response = call_openai_chat(prompt)
         try:
             parsed = json.loads(fallback_response)
-            # ✅ Flatten output here as well
+            if "edges" in parsed and isinstance(parsed["edges"], list):
+                parsed["network_graph"] = generate_network_graph(parsed["edges"])
+                parsed["degree_histogram"] = generate_degree_histogram(parsed["edges"])
+                del parsed["edges"]
             return JSONResponse(content=parsed)
         except json.JSONDecodeError:
             return JSONResponse(
