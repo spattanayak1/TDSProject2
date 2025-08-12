@@ -188,21 +188,24 @@ def call_openai_chat(prompt: str):
 # ==== API ENDPOINT ====
 
 @app.post("/api/")
-async def analyze(
-    questions: UploadFile = File(..., description="The main questions.txt file"),
-    extra_files: Optional[List[UploadFile]] = File(None, description="Optional additional files (any type)")
-):
+async def analyze(request: Request):
     try:
-        # Read main questions.txt
-        questions_content = await questions.read()
+        form = await request.form()
+
+        # Extract the mandatory questions.txt
+        if "questions.txt" not in form:
+            return JSONResponse(status_code=400, content={"error": "Missing questions.txt file"})
+
+        questions_file = form["questions.txt"]
+        questions_content = await questions_file.read()
         prompt = questions_content.decode("utf-8", errors="ignore").strip()
 
-        # Process extra files
+        # Process any additional files
         files_data = {}
-        if extra_files:
-            for file in extra_files:
-                content = await file.read()
-                files_data[file.filename] = process_file(file.filename, content)
+        for key, value in form.items():
+            if key != "questions.txt" and hasattr(value, "filename"):
+                file_bytes = await value.read()
+                files_data[value.filename] = process_file(value.filename, file_bytes)
 
         # Append processed file info & data to prompt
         if files_data:
@@ -227,6 +230,9 @@ async def analyze(
                 content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response}
             )
 
+    except Exception as e:
+        tb_str = traceback.format_exc()
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb_str})
     except Exception as e:
         tb_str = traceback.format_exc()
         return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb_str})
