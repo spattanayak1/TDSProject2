@@ -1,7 +1,7 @@
 import os
 import traceback
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 import json
@@ -9,20 +9,13 @@ import csv
 import io
 import base64
 import xml.etree.ElementTree as ET
-import PyPDF2  # Built-in to some Python environments, if not, handle as bytes
+import PyPDF2
 from zipfile import ZipFile
-import xml.etree.ElementTree as ET
 import pdfplumber
 import pandas as pd
 import pytesseract
 from PIL import Image
 import docx
-from zipfile import ZipFile
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from typing import Optional
-import traceback
-import json
 
 app = FastAPI()
 
@@ -61,38 +54,25 @@ Don't give sentences, give me just the data, numbers and the things User asked f
 """
 
 # ==== FILE HANDLING ====
-
 def process_file(fname: str, content: bytes):
-    """Detect file type and return structured content for prompt."""
     lower_name = fname.lower()
     try:
-        # Images → OCR
         if lower_name.endswith((".png", ".jpg", ".jpeg")):
             image = Image.open(io.BytesIO(content))
             text = pytesseract.image_to_string(image)
             return text.strip()
-
-        # CSV
         elif lower_name.endswith(".csv"):
             df = pd.read_csv(io.BytesIO(content))
             return df.to_dict(orient="records")
-
-        # Excel
         elif lower_name.endswith((".xlsx", ".xls")):
             df = pd.read_excel(io.BytesIO(content))
             return df.to_dict(orient="records")
-
-        # JSON
         elif lower_name.endswith(".json"):
             return json.loads(content.decode("utf-8", errors="ignore"))
-
-        # XML
         elif lower_name.endswith(".xml"):
             xml_text = content.decode("utf-8", errors="ignore")
             tree = ET.ElementTree(ET.fromstring(xml_text))
             return ET.tostring(tree.getroot(), encoding="unicode")
-
-        # PDF
         elif lower_name.endswith(".pdf"):
             pdf_text = []
             with pdfplumber.open(io.BytesIO(content)) as pdf:
@@ -101,36 +81,49 @@ def process_file(fname: str, content: bytes):
                     if page_text:
                         pdf_text.append(page_text)
             return "\n".join(pdf_text).strip()
-
-        # DOCX
         elif lower_name.endswith(".docx"):
             doc_obj = docx.Document(io.BytesIO(content))
             return "\n".join([p.text for p in doc_obj.paragraphs])
-
-        # ZIP
         elif lower_name.endswith(".zip"):
             try:
                 with ZipFile(io.BytesIO(content)) as zf:
                     return {"zip_contents": zf.namelist()}
             except:
                 return "<ZIP file could not be processed>"
-
-        # TXT
         elif lower_name.endswith(".txt"):
             return content.decode("utf-8", errors="ignore")
-
-        # Fallback
         else:
             try:
                 return content.decode("utf-8", errors="ignore")
             except:
                 return f"<Binary file {fname}, {len(content)} bytes>"
-
     except Exception as e:
         return f"<Error processing {fname}: {str(e)}>"
 
-# ==== GPT HELPERS ====
+# ==== IMAGE ENCODING ====
+def encode_image_to_data_uri(image_obj):
+    """Convert a PIL Image or image bytes to base64 data URI under 100KB."""
+    if isinstance(image_obj, Image.Image):
+        buffer = io.BytesIO()
+        image_obj.save(buffer, format="PNG", optimize=True)
+        image_bytes = buffer.getvalue()
+    elif isinstance(image_obj, bytes):
+        image_bytes = image_obj
+        image_obj = Image.open(io.BytesIO(image_bytes))
+    else:
+        raise ValueError("Unsupported image format for base64 encoding")
 
+    quality = 95
+    while len(image_bytes) > 100_000 and quality > 10:
+        buffer = io.BytesIO()
+        image_obj.save(buffer, format="PNG", optimize=True, quality=quality)
+        image_bytes = buffer.getvalue()
+        quality -= 5
+
+    base64_str = base64.b64encode(image_bytes).decode("utf-8")
+    return f"data:image/png;base64,{base64_str}"
+
+# ==== GPT HELPERS ====
 def generate_code(prompt: str) -> str:
     full_prompt = (
         "You are a Python automation expert. "
@@ -154,16 +147,13 @@ def execute_code(code: str):
     try:
         namespace = {}
         exec(code, namespace)
-
         if "result_json" in namespace:
             return namespace["result_json"], None, code
-
         if "main" in namespace and callable(namespace["main"]):
             result = namespace["main"]()
             if result is None and "result_json" in namespace:
                 return namespace["result_json"], None, code
             return result, None, code
-
         return None, "No 'result_json' variable or callable main() found", code
     except Exception as e:
         return None, f"Execution error: {str(e)}", code
@@ -191,13 +181,11 @@ def call_openai_chat(prompt: str):
     return response.choices[0].message.content.strip()
 
 # ==== API ENDPOINT ====
-
 @app.post("/api/")
 async def analyze(request: Request):
     try:
         form = await request.form()
 
-        # Extract the mandatory questions.txt
         if "questions.txt" not in form:
             return JSONResponse(status_code=400, content={"error": "Missing questions.txt file"})
 
@@ -205,26 +193,32 @@ async def analyze(request: Request):
         questions_content = await questions_file.read()
         prompt = questions_content.decode("utf-8", errors="ignore").strip()
 
-        # Process any additional files
         files_data = {}
         for key, value in form.items():
             if key != "questions.txt" and hasattr(value, "filename"):
                 file_bytes = await value.read()
                 files_data[value.filename] = process_file(value.filename, file_bytes)
 
-        # Append processed file info & data to prompt
         if files_data:
             prompt += "\n\nAttached Files:\n"
             for fname, data in files_data.items():
                 prompt += f"- {fname}:\n{data}\n"
 
-        # Try code-gen + execution loop
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
 
         if json_result is not None:
+            # 🔹 Convert images to base64 data URIs under 100KB
+            if isinstance(json_result, dict):
+                for k, v in json_result.items():
+                    if isinstance(v, Image.Image) or isinstance(v, bytes):
+                        json_result[k] = encode_image_to_data_uri(v)
+            elif isinstance(json_result, list):
+                for i, item in enumerate(json_result):
+                    if isinstance(item, Image.Image) or isinstance(item, bytes):
+                        json_result[i] = encode_image_to_data_uri(item)
+
             return JSONResponse(content={"data": json_result})
 
-        # Fallback to chat mode
         fallback_response = call_openai_chat(prompt)
         try:
             parsed = json.loads(fallback_response)
@@ -235,9 +229,6 @@ async def analyze(request: Request):
                 content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response}
             )
 
-    except Exception as e:
-        tb_str = traceback.format_exc()
-        return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb_str})
     except Exception as e:
         tb_str = traceback.format_exc()
         return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb_str})
