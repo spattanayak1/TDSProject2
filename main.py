@@ -104,11 +104,10 @@ def process_file(fname: str, content: bytes):
 def encode_image_to_data_uri(fig):
     """Convert a Matplotlib figure to base64 data URI under 100KB."""
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
     plt.close(fig)
     image_bytes = buf.getvalue()
 
-    # Resize quality until under 100KB
     while len(image_bytes) > 100_000:
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
@@ -121,9 +120,13 @@ def encode_image_to_data_uri(fig):
 def generate_network_graph(edges):
     G = nx.Graph()
     G.add_edges_from(edges)
-    fig, ax = plt.subplots(figsize=(5, 5))
-    pos = nx.spring_layout(G)
-    nx.draw(G, pos, with_labels=True, node_color="skyblue", node_size=700, font_size=10, ax=ax)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    pos = nx.spring_layout(G, seed=42)
+    nx.draw_networkx_nodes(G, pos, node_color="skyblue", node_size=800, ax=ax)
+    nx.draw_networkx_edges(G, pos, edge_color="gray", width=2, ax=ax)
+    nx.draw_networkx_labels(G, pos, font_size=12, font_color="black", ax=ax)
+    ax.set_axis_off()
+    fig.tight_layout()
     return encode_image_to_data_uri(fig)
 
 def generate_degree_histogram(edges):
@@ -135,6 +138,30 @@ def generate_degree_histogram(edges):
     ax.set_xlabel("Node Index")
     ax.set_ylabel("Degree")
     ax.set_title("Degree Distribution")
+    fig.tight_layout()
+    return encode_image_to_data_uri(fig)
+
+def generate_cumulative_sales_chart(dates, sales):
+    df = pd.DataFrame({"date": pd.to_datetime(dates), "sales": sales})
+    df = df.sort_values("date")
+    df["cumulative_sales"] = df["sales"].cumsum()
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(df["date"], df["cumulative_sales"], color="red", linewidth=2)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Cumulative Sales")
+    ax.set_title("Cumulative Sales Over Time")
+    ax.grid(True)
+    fig.tight_layout()
+    return encode_image_to_data_uri(fig)
+
+def generate_precip_histogram(precip_values):
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.hist(precip_values, bins=10, color="orange", edgecolor="black")
+    ax.set_xlabel("Precipitation Amount")
+    ax.set_ylabel("Frequency")
+    ax.set_title("Precipitation Histogram")
+    ax.grid(True)
+    fig.tight_layout()
     return encode_image_to_data_uri(fig)
 
 # ==== GPT HELPERS ====
@@ -150,11 +177,7 @@ def generate_code(prompt: str) -> str:
         "- Use only built-in Python libraries (no pip installs).\n"
         "- Output ONLY the Python code, nothing else."
     )
-
-    response = client.responses.create(
-        model="gpt-5-nano",
-        input=full_prompt
-    )
+    response = client.responses.create(model="gpt-5-nano", input=full_prompt)
     return response.output_text.strip()
 
 def execute_code(code: str):
@@ -199,7 +222,6 @@ def call_openai_chat(prompt: str):
 async def analyze(request: Request):
     try:
         form = await request.form()
-
         if "questions.txt" not in form:
             return JSONResponse(status_code=400, content={"error": "Missing questions.txt file"})
 
@@ -221,11 +243,20 @@ async def analyze(request: Request):
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
 
         if json_result is not None:
-            # Generate actual plots if edge list exists
             if "edges" in json_result and isinstance(json_result["edges"], list):
                 json_result["network_graph"] = generate_network_graph(json_result["edges"])
                 json_result["degree_histogram"] = generate_degree_histogram(json_result["edges"])
-                del json_result["edges"]  # Remove raw edges if not needed in output
+                del json_result["edges"]
+
+            if "cumulative_sales_data" in json_result:
+                dates = [row["date"] for row in json_result["cumulative_sales_data"]]
+                sales = [row["sales"] for row in json_result["cumulative_sales_data"]]
+                json_result["cumulative_sales_chart"] = generate_cumulative_sales_chart(dates, sales)
+                del json_result["cumulative_sales_data"]
+
+            if "precip_data" in json_result:
+                json_result["precip_histogram"] = generate_precip_histogram(json_result["precip_data"])
+                del json_result["precip_data"]
 
             return JSONResponse(content=json_result)
 
@@ -238,10 +269,7 @@ async def analyze(request: Request):
                 del parsed["edges"]
             return JSONResponse(content=parsed)
         except json.JSONDecodeError:
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response}
-            )
+            return JSONResponse(status_code=500, content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response})
 
     except Exception as e:
         tb_str = traceback.format_exc()
