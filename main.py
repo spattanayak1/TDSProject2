@@ -77,16 +77,23 @@ def process_file(fname: str, content: bytes):
 
 # ==== IMAGE ENCODING ====
 def encode_image_to_data_uri(fig):
+    # Initial save
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
-    plt.close(fig)
     image_bytes = buf.getvalue()
-    while len(image_bytes) > 100_000:
+
+    # Reduce size if needed
+    dpi = 120
+    while len(image_bytes) > 100_000 and dpi > 20:
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
+        dpi -= 10
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
         image_bytes = buf.getvalue()
+
+    plt.close(fig)  # Only close after we're done
     base64_str = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:image/png;base64,{base64_str}"
+
 
 # ==== SPECIFIC CHART HELPERS ====
 def generate_network_graph(edges):
