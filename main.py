@@ -28,29 +28,15 @@ if not OPENAI_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 SYSTEM_PROMPT = """
-You are a senior data analyst. You will receive messages from a manager that may contain a mix of tasks, business questions, objectives, and sometimes a data source or description of data (e.g., a CSV file, database schema, table summary, or a URL to scrape data from).
+You are a senior data analyst. You will receive messages from a manager that may contain tasks, questions, objectives, and sometimes data sources (e.g., CSV, URLs, or descriptions).
 
-Your job is to:
-1. Carefully read and extract all requested tasks and objectives.
+Your job:
+1. Extract all tasks and objectives.
 2. Analyze and interpret the request with precision.
-3. Break down the tasks into specific, structured components.
-4. Format your entire response strictly in JSON following the exact response schema given in the message (if provided).
-5. If no response schema is provided, infer a logical and minimal JSON structure that matches the questions asked.
-
-Instructions:
-- Do not include any explanation, commentary, markdown formatting, or natural language text outside of the JSON.
-- Return only a valid, well-formatted JSON object (or array if specified).
-- Do not make assumptions beyond what is asked in the request.
-- If a data source is mentioned, ensure it is included in the task context.
-- Every task must include a clear objective, any dependencies (like datasets or URLs), and expected output format if described.
-- You may be asked to do data scraping, correlation, visualizations, or numerical analysis.
-
-Response formatting rules:
-- Always return the JSON exactly as instructed by the request.
-- If a plot is requested, return a base64-encoded data URI string (e.g., "data:image/png;base64,..."), and ensure it's under 100,000 bytes when instructed.
-
-Only return valid JSON. Be accurate, structured, and concise.
-Don't give sentences, give me just the data, numbers and the things User asked for.
+3. Break down into structured components.
+4. Return ONLY valid JSON with the exact schema requested or a logical minimal JSON if none given.
+5. For plots, return the data in a way that allows the backend to generate them (include chart_type, x_data, y_data, labels if needed).
+6. Do NOT return explanations outside of JSON.
 """
 
 # ==== FILE HANDLING ====
@@ -102,7 +88,6 @@ def process_file(fname: str, content: bytes):
 
 # ==== IMAGE ENCODING ====
 def encode_image_to_data_uri(fig):
-    """Convert a Matplotlib figure to base64 data URI under 100KB."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
     plt.close(fig)
@@ -116,66 +101,42 @@ def encode_image_to_data_uri(fig):
     base64_str = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:image/png;base64,{base64_str}"
 
-# ==== GRAPH PLOTTING ====
-def generate_network_graph(edges):
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    fig, ax = plt.subplots(figsize=(6, 6))
-    pos = nx.spring_layout(G, seed=42)
-    nx.draw_networkx_nodes(G, pos, node_color="skyblue", node_size=800, ax=ax)
-    nx.draw_networkx_edges(G, pos, edge_color="gray", width=2, ax=ax)
-    nx.draw_networkx_labels(G, pos, font_size=12, font_color="black", ax=ax)
-    ax.set_axis_off()
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-def generate_degree_histogram(edges):
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    degrees = [deg for _, deg in G.degree()]
-    fig, ax = plt.subplots(figsize=(5, 4))
-    ax.bar(range(len(degrees)), degrees, color="green")
-    ax.set_xlabel("Node Index")
-    ax.set_ylabel("Degree")
-    ax.set_title("Degree Distribution")
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-def generate_cumulative_sales_chart(dates, sales):
-    df = pd.DataFrame({"date": pd.to_datetime(dates), "sales": sales})
-    df = df.sort_values("date")
-    df["cumulative_sales"] = df["sales"].cumsum()
+# ==== GENERIC PLOT GENERATOR ====
+def generate_chart(chart_type, x_data=None, y_data=None, labels=None, **kwargs):
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(df["date"], df["cumulative_sales"], color="red", linewidth=2)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Cumulative Sales")
-    ax.set_title("Cumulative Sales Over Time")
-    ax.grid(True)
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
+    
+    if chart_type == "scatter":
+        ax.scatter(x_data, y_data, **kwargs)
+    elif chart_type == "line":
+        ax.plot(x_data, y_data, **kwargs)
+    elif chart_type == "bar":
+        ax.bar(x_data, y_data, **kwargs)
+    elif chart_type == "hist":
+        ax.hist(x_data, bins=kwargs.get("bins", 10), **kwargs)
+    elif chart_type == "pie":
+        ax.pie(y_data, labels=labels, autopct='%1.1f%%', **kwargs)
+    else:
+        plt.close(fig)
+        return None
 
-def generate_precip_histogram(precip_values):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.hist(precip_values, bins=10, color="orange", edgecolor="black")
-    ax.set_xlabel("Precipitation Amount")
-    ax.set_ylabel("Frequency")
-    ax.set_title("Precipitation Histogram")
-    ax.grid(True)
+    ax.set_xlabel(kwargs.get("xlabel", ""))
+    ax.set_ylabel(kwargs.get("ylabel", ""))
+    ax.set_title(kwargs.get("title", chart_type.capitalize()))
+
     fig.tight_layout()
     return encode_image_to_data_uri(fig)
 
 # ==== GPT HELPERS ====
 def generate_code(prompt: str) -> str:
     full_prompt = (
-        "You are a Python automation expert. "
-        "Write a complete Python script to do the following task:\n"
+        "You are a Python automation expert.\n"
+        "Write a complete Python script to solve the task:\n"
         f"{prompt}\n\n"
-        "The script must:\n"
-        "- Assign the final result to a variable named result_json.\n"
-        "- The format of result_json must match exactly the format requested in the question.\n"
-        "- Do not print anything. No explanations, no markdown, no logs.\n"
-        "- Use only built-in Python libraries (no pip installs).\n"
-        "- Output ONLY the Python code, nothing else."
+        "Requirements:\n"
+        "- Final result in variable result_json.\n"
+        "- Match exactly the requested JSON format.\n"
+        "- No prints or logs.\n"
+        "- Only use built-in Python libraries.\n"
     )
     response = client.responses.create(model="gpt-5-nano", input=full_prompt)
     return response.output_text.strip()
@@ -197,13 +158,12 @@ def execute_code(code: str):
 
 async def feedback_loop(prompt: str, max_attempts=4):
     error_message = ""
-    for attempt in range(max_attempts):
-        full_prompt = f"Fix the code based on this error:\n{error_message}\nTask:\n{prompt}" if error_message else prompt
-        code = generate_code(full_prompt)
+    for _ in range(max_attempts):
+        code = generate_code(prompt if not error_message else f"Fix error:\n{error_message}\nTask:\n{prompt}")
         json_result, error, executed_code = execute_code(code)
-        if error is None:
+        if not error:
             return json_result, executed_code, None
-        error_message = f"{error}\n\nCode:\n{code}"
+        error_message = error
     return None, None, error_message
 
 def call_openai_chat(prompt: str):
@@ -240,36 +200,38 @@ async def analyze(request: Request):
             for fname, data in files_data.items():
                 prompt += f"- {fname}:\n{data}\n"
 
-        json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
+        json_result, executed_code, error_message = await feedback_loop(prompt)
 
-        if json_result is not None:
-            if "edges" in json_result and isinstance(json_result["edges"], list):
-                json_result["network_graph"] = generate_network_graph(json_result["edges"])
-                json_result["degree_histogram"] = generate_degree_histogram(json_result["edges"])
-                del json_result["edges"]
-
-            if "cumulative_sales_data" in json_result:
-                dates = [row["date"] for row in json_result["cumulative_sales_data"]]
-                sales = [row["sales"] for row in json_result["cumulative_sales_data"]]
-                json_result["cumulative_sales_chart"] = generate_cumulative_sales_chart(dates, sales)
-                del json_result["cumulative_sales_data"]
-
-            if "precip_data" in json_result:
-                json_result["precip_histogram"] = generate_precip_histogram(json_result["precip_data"])
-                del json_result["precip_data"]
-
+        if json_result:
+            # Handle dynamic chart generation
+            if "plots" in json_result and isinstance(json_result["plots"], list):
+                for plot in json_result["plots"]:
+                    chart_uri = generate_chart(
+                        chart_type=plot.get("type"),
+                        x_data=plot.get("x"),
+                        y_data=plot.get("y"),
+                        labels=plot.get("labels"),
+                        **plot.get("kwargs", {})
+                    )
+                    plot["image"] = chart_uri
             return JSONResponse(content=json_result)
 
         fallback_response = call_openai_chat(prompt)
         try:
             parsed = json.loads(fallback_response)
-            if "edges" in parsed and isinstance(parsed["edges"], list):
-                parsed["network_graph"] = generate_network_graph(parsed["edges"])
-                parsed["degree_histogram"] = generate_degree_histogram(parsed["edges"])
-                del parsed["edges"]
+            if "plots" in parsed and isinstance(parsed["plots"], list):
+                for plot in parsed["plots"]:
+                    chart_uri = generate_chart(
+                        chart_type=plot.get("type"),
+                        x_data=plot.get("x"),
+                        y_data=plot.get("y"),
+                        labels=plot.get("labels"),
+                        **plot.get("kwargs", {})
+                    )
+                    plot["image"] = chart_uri
             return JSONResponse(content=parsed)
         except json.JSONDecodeError:
-            return JSONResponse(status_code=500, content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response})
+            return JSONResponse(status_code=500, content={"error": "Invalid JSON from fallback", "response": fallback_response})
 
     except Exception as e:
         tb_str = traceback.format_exc()
