@@ -16,6 +16,7 @@ from PIL import Image
 import docx
 import matplotlib.pyplot as plt
 import networkx as nx
+import csv
 
 app = FastAPI()
 
@@ -26,7 +27,31 @@ if not OPENAI_API_KEY:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-SYSTEM_PROMPT = """Your system prompt here..."""  # unchanged
+SYSTEM_PROMPT = """
+You are a senior data analyst. You will receive messages from a manager that may contain a mix of tasks, business questions, objectives, and sometimes a data source or description of data (e.g., a CSV file, database schema, table summary, or a URL to scrape data from).
+
+Your job is to:
+1. Carefully read and extract all requested tasks and objectives.
+2. Analyze and interpret the request with precision.
+3. Break down the tasks into specific, structured components.
+4. Format your entire response strictly in JSON following the exact response schema given in the message (if provided).
+5. If no response schema is provided, infer a logical and minimal JSON structure that matches the questions asked.
+
+Instructions:
+- Do not include any explanation, commentary, markdown formatting, or natural language text outside of the JSON.
+- Return only a valid, well-formatted JSON object (or array if specified).
+- Do not make assumptions beyond what is asked in the request.
+- If a data source is mentioned, ensure it is included in the task context.
+- Every task must include a clear objective, any dependencies (like datasets or URLs), and expected output format if described.
+- You may be asked to do data scraping, correlation, visualizations, or numerical analysis.
+
+Response formatting rules:
+- Always return the JSON exactly as instructed by the request.
+- If a plot is requested, return a base64-encoded data URI string (e.g., "data:image/png;base64,..."), and ensure it's under 100,000 bytes when instructed.
+
+Only return valid JSON. Be accurate, structured, and concise.
+Don't give sentences, give me just the data, numbers and the things User asked for.
+"""
 
 # ==== FILE HANDLING ====
 def process_file(fname: str, content: bytes):
@@ -209,7 +234,17 @@ def generate_generic_chart(chart_info):
 
 # ==== GPT HELPERS ====
 def generate_code(prompt: str) -> str:
-    full_prompt = f"Your code generation prompt here..."
+    full_prompt = (
+        "You are a Python automation expert. "
+        "Write a complete Python script to do the following task:\n"
+        f"{prompt}\n\n"
+        "The script must:\n"
+        "- Assign the final result to a variable named result_json.\n"
+        "- The format of result_json must match exactly the format requested in the question.\n"
+        "- Do not print anything. No explanations, no markdown, no logs.\n"
+        "- Use only built-in Python libraries (no pip installs).\n"
+        "- Output ONLY the Python code, nothing else."
+    )
     response = client.responses.create(model="gpt-5-nano", input=full_prompt)
     return response.output_text.strip()
 
