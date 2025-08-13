@@ -1,21 +1,23 @@
 import os
+import io
+import json
+import base64
 import traceback
-from typing import List
+from zipfile import ZipFile
+from typing import Dict
+
+import pandas as pd
+import pytesseract
+import matplotlib.pyplot as plt
+import networkx as nx
+import pdfplumber
+import docx
+from PIL import Image
+import xml.etree.ElementTree as ET
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from openai import OpenAI
-import json
-import io
-import base64
-import xml.etree.ElementTree as ET
-from zipfile import ZipFile
-import pdfplumber
-import pandas as pd
-import pytesseract
-from PIL import Image
-import docx
-import matplotlib.pyplot as plt
-import networkx as nx
 
 app = FastAPI()
 
@@ -23,185 +25,152 @@ app = FastAPI()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY environment variable not set")
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-SYSTEM_PROMPT = """..."""  # unchanged from your version
+SYSTEM_PROMPT = """
+You are a senior data analyst. You receive tasks, numeric questions, and sometimes files.
+Return only JSON with numeric results, arrays, or plots. Plots must have 'plot_type' and 'data' + optional 'options'.
+Do not include any commentary or markdown.
+"""
 
-# ==== FILE HANDLING ====
+# ==== FILE PROCESSING ====
 def process_file(fname: str, content: bytes):
-    lower_name = fname.lower()
     try:
+        lower_name = fname.lower()
         if lower_name.endswith((".png", ".jpg", ".jpeg")):
-            image = Image.open(io.BytesIO(content))
-            text = pytesseract.image_to_string(image)
-            return text.strip()
+            return pytesseract.image_to_string(Image.open(io.BytesIO(content))).strip()
         elif lower_name.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content))
-            return df.to_dict(orient="records")
+            return pd.read_csv(io.BytesIO(content)).to_dict(orient="records")
         elif lower_name.endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(content))
-            return df.to_dict(orient="records")
+            return pd.read_excel(io.BytesIO(content)).to_dict(orient="records")
         elif lower_name.endswith(".json"):
             return json.loads(content.decode("utf-8", errors="ignore"))
         elif lower_name.endswith(".xml"):
-            xml_text = content.decode("utf-8", errors="ignore")
-            tree = ET.ElementTree(ET.fromstring(xml_text))
+            tree = ET.ElementTree(ET.fromstring(content.decode("utf-8", errors="ignore")))
             return ET.tostring(tree.getroot(), encoding="unicode")
         elif lower_name.endswith(".pdf"):
-            pdf_text = []
+            text = []
             with pdfplumber.open(io.BytesIO(content)) as pdf:
                 for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        pdf_text.append(page_text)
-            return "\n".join(pdf_text).strip()
+                    t = page.extract_text()
+                    if t:
+                        text.append(t)
+            return "\n".join(text).strip()
         elif lower_name.endswith(".docx"):
-            doc_obj = docx.Document(io.BytesIO(content))
-            return "\n".join([p.text for p in doc_obj.paragraphs])
+            doc = docx.Document(io.BytesIO(content))
+            return "\n".join([p.text for p in doc.paragraphs])
         elif lower_name.endswith(".zip"):
-            try:
-                with ZipFile(io.BytesIO(content)) as zf:
-                    return {"zip_contents": zf.namelist()}
-            except:
-                return "<ZIP file could not be processed>"
+            with ZipFile(io.BytesIO(content)) as zf:
+                return {"zip_contents": zf.namelist()}
         elif lower_name.endswith(".txt"):
             return content.decode("utf-8", errors="ignore")
         else:
-            try:
-                return content.decode("utf-8", errors="ignore")
-            except:
-                return f"<Binary file {fname}, {len(content)} bytes>"
+            return content.decode("utf-8", errors="ignore")
     except Exception as e:
         return f"<Error processing {fname}: {str(e)}>"
 
 # ==== IMAGE ENCODING ====
-def encode_image_to_data_uri(fig):
+def encode_fig_to_base64(fig):
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
     plt.close(fig)
-    image_bytes = buf.getvalue()
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
 
-    while len(image_bytes) > 100_000:
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
-        image_bytes = buf.getvalue()
-
-    base64_str = base64.b64encode(image_bytes).decode("utf-8")
-    return f"data:image/png;base64,{base64_str}"
-
-# ==== GRAPH PLOTTING ====
-def generate_network_graph(edges):
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    fig, ax = plt.subplots(figsize=(6, 6))
-    pos = nx.spring_layout(G, seed=42)
-    nx.draw_networkx_nodes(G, pos, node_color="skyblue", node_size=800, ax=ax)
-    nx.draw_networkx_edges(G, pos, edge_color="gray", width=2, ax=ax)
-    nx.draw_networkx_labels(G, pos, font_size=12, font_color="black", ax=ax)
-    ax.set_axis_off()
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-def generate_degree_histogram(edges):
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    degrees = [deg for _, deg in G.degree()]
-    fig, ax = plt.subplots(figsize=(5, 4))
-    ax.bar(range(len(degrees)), degrees, color="green")
-    ax.set_xlabel("Node Index")
-    ax.set_ylabel("Degree")
-    ax.set_title("Degree Distribution")
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-def generate_line_chart(dates, values, color="red", title="Line Chart"):
-    df = pd.DataFrame({"date": pd.to_datetime(dates), "value": values})
-    df = df.sort_values("date")
+# ==== DYNAMIC CHART RENDERING ====
+def render_dynamic_chart(data, options=None):
+    if options is None:
+        options = {}
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(df["date"], df["value"], color=color, linewidth=2)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Value")
-    ax.set_title(title)
-    ax.grid(True)
+    kind = options.get("kind", "line")
+    
+    try:
+        if kind == "line":
+            ax.plot(data.get("x", []), data.get("y", []), color=options.get("color", "red"), linewidth=2)
+        elif kind == "scatter":
+            ax.scatter(data.get("x", []), data.get("y", []), color=options.get("color", "blue"))
+        elif kind == "bar":
+            ax.bar(data.get("x", []), data.get("y", []), color=options.get("color", "green"))
+        elif kind == "histogram":
+            ax.hist(data.get("values", []), bins=options.get("bins", 10), color=options.get("color", "orange"), edgecolor="black")
+        elif kind == "pie":
+            ax.pie(data.get("values", []), labels=data.get("labels", []), autopct="%1.1f%%")
+        elif kind == "network":
+            edges = data
+            G = nx.Graph()
+            G.add_edges_from(edges)
+            pos = nx.spring_layout(G, seed=42)
+            nx.draw(G, pos, with_labels=True, node_color="skyblue", node_size=800, edge_color="gray", ax=ax)
+        elif kind == "degree_histogram":
+            edges = data
+            G = nx.Graph()
+            G.add_edges_from(edges)
+            degrees = [deg for _, deg in G.degree()]
+            ax.bar(range(len(degrees)), degrees, color="green")
+            ax.set_xlabel("Node Index")
+            ax.set_ylabel("Degree")
+            ax.set_title("Degree Distribution")
+        elif kind == "regression":
+            import numpy as np
+            x = np.array(data.get("x", []))
+            y = np.array(data.get("y", []))
+            ax.scatter(x, y, color="blue", label="Data points")
+            if len(x) > 1:
+                coef = np.polyfit(x, y, 1)
+                fit_line = np.poly1d(coef)
+                ax.plot(x, fit_line(x), color="red", linewidth=2, label="Fit line")
+            ax.set_xlabel(options.get("xlabel", "X"))
+            ax.set_ylabel(options.get("ylabel", "Y"))
+            ax.set_title(options.get("title", "Regression Chart"))
+            ax.legend()
+        else:
+            ax.plot(data.get("x", []), data.get("y", []))
+            ax.set_title(options.get("title", kind))
+    except Exception as e:
+        plt.close(fig)
+        return f"<Error rendering plot: {str(e)}>"
+    
+    ax.set_xlabel(options.get("xlabel", ""))
+    ax.set_ylabel(options.get("ylabel", ""))
+    ax.set_title(options.get("title", ""))
     fig.tight_layout()
-    return encode_image_to_data_uri(fig)
+    return encode_fig_to_base64(fig)
 
-def generate_histogram(values, color="orange", title="Histogram"):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.hist(values, bins=10, color=color, edgecolor="black")
-    ax.set_title(title)
-    ax.set_xlabel("Value")
-    ax.set_ylabel("Frequency")
-    ax.grid(True)
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-# ==== GPT HELPERS ====
-def generate_code(prompt: str) -> str:
-    full_prompt = (
-        "You are a Python automation expert. "
-        "Write a complete Python script to do the following task:\n"
-        f"{prompt}\n\n"
-        "- Assign the final result to a variable named result_json.\n"
-        "- Output ONLY the Python code."
-    )
-    response = client.responses.create(model="gpt-5-nano", input=full_prompt)
-    return response.output_text.strip()
-
+# ==== EXECUTE GENERATED PYTHON CODE ====
 def execute_code(code: str):
     try:
         namespace = {}
         exec(code, namespace)
         if "result_json" in namespace:
-            return namespace["result_json"], None, code
-        return None, "No 'result_json' variable found", code
+            return namespace["result_json"], None
+        return None, "No 'result_json' variable found"
     except Exception as e:
-        return None, f"Execution error: {str(e)}", code
+        return None, f"Execution error: {str(e)}"
 
 async def feedback_loop(prompt: str, max_attempts=4):
     error_message = ""
     for attempt in range(max_attempts):
         full_prompt = f"Fix the code based on this error:\n{error_message}\nTask:\n{prompt}" if error_message else prompt
-        code = generate_code(full_prompt)
-        json_result, error, executed_code = execute_code(code)
+        response = client.responses.create(
+            model="gpt-5-nano",
+            input=f"Write Python code for this task. Final result must be in result_json:\n{full_prompt}"
+        )
+        code = response.output_text.strip()
+        result, error = execute_code(code)
         if error is None:
-            return json_result, executed_code, None
+            return result, code, None
         error_message = f"{error}\n\nCode:\n{code}"
     return None, None, error_message
 
+# ==== OPENAI FALLBACK ====
 def call_openai_chat(prompt: str):
     response = client.chat.completions.create(
         model="gpt-5-nano",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
+        messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                  {"role": "user", "content": prompt}],
         temperature=0.2
     )
     return response.choices[0].message.content.strip()
-
-# ==== CHART AUTO-DETECT ====
-def auto_generate_charts(json_result: dict):
-    for key, value in list(json_result.items()):
-        if isinstance(value, list) and value and isinstance(value[0], dict):
-            keys_lower = [k.lower() for k in value[0].keys()]
-            if "date" in keys_lower and any(isinstance(v, (int, float)) for v in value[0].values()):
-                numeric_col = [k for k in value[0].keys() if k.lower() != "date"][0]
-                json_result[f"{key}_chart"] = generate_line_chart(
-                    [row["date"] for row in value],
-                    [row[numeric_col] for row in value],
-                    color="red" if "temperature" in key.lower() else "blue",
-                    title=f"{key} over Time"
-                )
-                del json_result[key]
-        elif isinstance(value, list) and all(isinstance(v, (int, float)) for v in value):
-            json_result[f"{key}_histogram"] = generate_histogram(
-                value,
-                color="orange" if "precip" in key.lower() else "gray",
-                title=f"{key} Histogram"
-            )
-            del json_result[key]
-    return json_result
 
 # ==== API ENDPOINT ====
 @app.post("/api/")
@@ -211,32 +180,44 @@ async def analyze(request: Request):
         if "questions.txt" not in form:
             return JSONResponse(status_code=400, content={"error": "Missing questions.txt file"})
 
-        prompt = (await form["questions.txt"].read()).decode("utf-8", errors="ignore").strip()
+        questions_content = await form["questions.txt"].read()
+        prompt = questions_content.decode("utf-8", errors="ignore").strip()
+
         files_data = {}
         for key, value in form.items():
             if key != "questions.txt" and hasattr(value, "filename"):
                 files_data[value.filename] = process_file(value.filename, await value.read())
 
         if files_data:
-            prompt += "\n\nAttached Files:\n" + "\n".join(f"- {fname}: {data}" for fname, data in files_data.items())
+            prompt += "\n\nAttached Files:\n"
+            for fname, data in files_data.items():
+                prompt += f"- {fname}:\n{data}\n"
 
-        json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
-        if json_result is not None:
-            if "edges" in json_result:
-                json_result["network_graph"] = generate_network_graph(json_result["edges"])
-                json_result["degree_histogram"] = generate_degree_histogram(json_result["edges"])
-                del json_result["edges"]
-
-            json_result = auto_generate_charts(json_result)
+        # Try feedback loop first (Python code execution)
+        json_result, executed_code, error_message = await feedback_loop(prompt)
+        if json_result:
+            for k, v in list(json_result.items()):
+                if isinstance(v, dict) and v.get("plot_type"):
+                    plot_type = v.pop("plot_type")
+                    data = v.pop("data", v)
+                    options = v.pop("options", {})
+                    json_result[k] = render_dynamic_chart(data, options)
             return JSONResponse(content=json_result)
 
+        # Fallback to direct OpenAI JSON response
         fallback_response = call_openai_chat(prompt)
         try:
             parsed = json.loads(fallback_response)
-            parsed = auto_generate_charts(parsed)
+            for k, v in list(parsed.items()):
+                if isinstance(v, dict) and v.get("plot_type"):
+                    plot_type = v.pop("plot_type")
+                    data = v.pop("data", v)
+                    options = v.pop("options", {})
+                    parsed[k] = render_dynamic_chart(data, options)
             return JSONResponse(content=parsed)
         except json.JSONDecodeError:
-            return JSONResponse(status_code=500, content={"error": "Invalid JSON", "response": fallback_response})
+            return JSONResponse(status_code=500, content={"error": "OpenAI response not valid JSON", "response": fallback_response})
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e), "traceback": traceback.format_exc()})
+        tb_str = traceback.format_exc()
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb_str})
