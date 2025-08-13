@@ -212,8 +212,7 @@ def call_openai_chat(prompt: str):
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
-        ],
-        temperature=0.2
+        ]
     )
     return response.choices[0].message.content.strip()
 
