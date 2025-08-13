@@ -5,6 +5,7 @@ from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 import json
+import csv
 import io
 import base64
 import xml.etree.ElementTree as ET
@@ -16,7 +17,6 @@ from PIL import Image
 import docx
 import matplotlib.pyplot as plt
 import networkx as nx
-import csv
 
 app = FastAPI()
 
@@ -102,25 +102,21 @@ def process_file(fname: str, content: bytes):
 
 # ==== IMAGE ENCODING ====
 def encode_image_to_data_uri(fig):
-    # Initial save
+    """Convert a Matplotlib figure to base64 data URI under 100KB."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
+    plt.close(fig)
     image_bytes = buf.getvalue()
 
-    # Reduce size if needed
-    dpi = 120
-    while len(image_bytes) > 100_000 and dpi > 20:
+    while len(image_bytes) > 100_000:
         buf = io.BytesIO()
-        dpi -= 10
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
         image_bytes = buf.getvalue()
 
-    plt.close(fig)  # Only close after we're done
     base64_str = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:image/png;base64,{base64_str}"
 
-
-# ==== SPECIFIC CHART HELPERS ====
+# ==== GRAPH PLOTTING ====
 def generate_network_graph(edges):
     G = nx.Graph()
     G.add_edges_from(edges)
@@ -165,70 +161,6 @@ def generate_precip_histogram(precip_values):
     ax.set_ylabel("Frequency")
     ax.set_title("Precipitation Histogram")
     ax.grid(True)
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-def generate_line_chart(data):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    x = [row["x"] for row in data]
-    y = [row["y"] for row in data]
-    ax.plot(x, y, marker="o", color="blue")
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_title("Line Chart")
-    ax.grid(True)
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-def generate_pie_chart(data):
-    fig, ax = plt.subplots(figsize=(5, 5))
-    labels = [row["label"] for row in data]
-    values = [row["value"] for row in data]
-    ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=140)
-    ax.set_title("Pie Chart")
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-def generate_regression_plot(data):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.scatter(data["x"], data["y"], color="blue", label="Actual")
-    ax.plot(data["x"], data["y_pred"], color="red", linewidth=2, label="Predicted")
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_title("Regression Plot")
-    ax.legend()
-    ax.grid(True)
-    fig.tight_layout()
-    return encode_image_to_data_uri(fig)
-
-# ==== GENERIC CHART HANDLER ====
-def generate_generic_chart(chart_info):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    chart_type = chart_info.get("type", "").lower()
-    data = chart_info.get("data", [])
-
-    if chart_type == "line":
-        x = [row["x"] for row in data]
-        y = [row["y"] for row in data]
-        ax.plot(x, y, marker="o", color="blue")
-    elif chart_type == "bar":
-        x = [row["x"] for row in data]
-        y = [row["y"] for row in data]
-        ax.bar(x, y, color="skyblue", edgecolor="black")
-    elif chart_type == "scatter":
-        x = [row["x"] for row in data]
-        y = [row["y"] for row in data]
-        ax.scatter(x, y, color="purple")
-    elif chart_type == "pie":
-        labels = [row["label"] for row in data]
-        values = [row["value"] for row in data]
-        ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=140)
-    else:
-        ax.text(0.5, 0.5, f"Chart type '{chart_type}' not supported",
-                ha='center', va='center', fontsize=12, color="red")
-        ax.set_axis_off()
-
-    ax.grid(True, linestyle="--", alpha=0.5)
     fig.tight_layout()
     return encode_image_to_data_uri(fig)
 
@@ -280,8 +212,8 @@ def call_openai_chat(prompt: str):
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
-        ]
-        
+        ],
+        temperature=0.2
     )
     return response.choices[0].message.content.strip()
 
@@ -311,7 +243,6 @@ async def analyze(request: Request):
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
 
         if json_result is not None:
-            # Existing chart handlers
             if "edges" in json_result and isinstance(json_result["edges"], list):
                 json_result["network_graph"] = generate_network_graph(json_result["edges"])
                 json_result["degree_histogram"] = generate_degree_histogram(json_result["edges"])
@@ -326,24 +257,6 @@ async def analyze(request: Request):
             if "precip_data" in json_result:
                 json_result["precip_histogram"] = generate_precip_histogram(json_result["precip_data"])
                 del json_result["precip_data"]
-
-            # New fixed handlers
-            if "line_chart_data" in json_result:
-                json_result["line_chart"] = generate_line_chart(json_result["line_chart_data"])
-                del json_result["line_chart_data"]
-
-            if "pie_chart_data" in json_result:
-                json_result["pie_chart"] = generate_pie_chart(json_result["pie_chart_data"])
-                del json_result["pie_chart_data"]
-
-            if "regression_data" in json_result:
-                json_result["regression_plot"] = generate_regression_plot(json_result["regression_data"])
-                del json_result["regression_data"]
-
-            # Generic handler for future chart types
-            if "chart" in json_result and isinstance(json_result["chart"], dict):
-                json_result["chart_image"] = generate_generic_chart(json_result["chart"])
-                del json_result["chart"]
 
             return JSONResponse(content=json_result)
 
