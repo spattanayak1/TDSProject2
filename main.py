@@ -5,6 +5,7 @@ from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 import json
+import csv
 import io
 import base64
 import xml.etree.ElementTree as ET
@@ -16,7 +17,6 @@ from PIL import Image
 import docx
 import matplotlib.pyplot as plt
 import networkx as nx
-import numpy as np
 
 app = FastAPI()
 
@@ -48,7 +48,6 @@ Instructions:
 Response formatting rules:
 - Always return the JSON exactly as instructed by the request.
 - If a plot is requested, return a base64-encoded data URI string (e.g., "data:image/png;base64,..."), and ensure it's under 100,000 bytes when instructed.
-- For visualizations, include a 'plot_request' object in your JSON with the following keys: 'type', 'x_data', 'y_data', 'x_label', 'y_label', 'title', and 'options' (for things like regression lines, colors, etc.). The values for 'x_data' and 'y_data' should be the actual data arrays.
 
 Only return valid JSON. Be accurate, structured, and concise.
 Don't give sentences, give me just the data, numbers and the things User asked for.
@@ -109,53 +108,60 @@ def encode_image_to_data_uri(fig):
     plt.close(fig)
     image_bytes = buf.getvalue()
 
-    # If the image is too large, reduce DPI and try again
-    while len(image_bytes) > 100_000 and 120 > 50:
+    while len(image_bytes) > 100_000:
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
         image_bytes = buf.getvalue()
 
     base64_str = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:image/png;base64,{base64_str}"
 
-# ==== DYNAMIC PLOTTING ====
-def generate_dynamic_plot(plot_config):
-    plot_type = plot_config.get("type", "scatter")
-    x_data = plot_config.get("x_data")
-    y_data = plot_config.get("y_data")
-    x_label = plot_config.get("x_label", "")
-    y_label = plot_config.get("y_label", "")
-    title = plot_config.get("title", "")
-    options = plot_config.get("options", {})
+# ==== GRAPH PLOTTING ====
+def generate_network_graph(edges):
+    G = nx.Graph()
+    G.add_edges_from(edges)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    pos = nx.spring_layout(G, seed=42)
+    nx.draw_networkx_nodes(G, pos, node_color="skyblue", node_size=800, ax=ax)
+    nx.draw_networkx_edges(G, pos, edge_color="gray", width=2, ax=ax)
+    nx.draw_networkx_labels(G, pos, font_size=12, font_color="black", ax=ax)
+    ax.set_axis_off()
+    fig.tight_layout()
+    return encode_image_to_data_uri(fig)
 
-    if not x_data or not y_data:
-        return None
+def generate_degree_histogram(edges):
+    G = nx.Graph()
+    G.add_edges_from(edges)
+    degrees = [deg for _, deg in G.degree()]
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.bar(range(len(degrees)), degrees, color="green")
+    ax.set_xlabel("Node Index")
+    ax.set_ylabel("Degree")
+    ax.set_title("Degree Distribution")
+    fig.tight_layout()
+    return encode_image_to_data_uri(fig)
 
+def generate_cumulative_sales_chart(dates, sales):
+    df = pd.DataFrame({"date": pd.to_datetime(dates), "sales": sales})
+    df = df.sort_values("date")
+    df["cumulative_sales"] = df["sales"].cumsum()
     fig, ax = plt.subplots(figsize=(6, 4))
-
-    if plot_type == "scatter":
-        ax.scatter(x_data, y_data, color=options.get("color", "blue"))
-        if options.get("regression_line"):
-            # Calculate and plot the regression line
-            z = np.polyfit(x_data, y_data, 1)
-            p = np.poly1d(z)
-            ax.plot(x_data, p(x_data), color=options.get("regression_color", "red"),
-                    linestyle=options.get("regression_style", "--"))
-    elif plot_type == "line":
-        ax.plot(x_data, y_data, color=options.get("color", "blue"), marker=options.get("marker", "o"))
-    elif plot_type == "bar":
-        ax.bar(x_data, y_data, color=options.get("color", "blue"))
-    elif plot_type == "histogram":
-        ax.hist(x_data, bins=options.get("bins", 10), color=options.get("color", "blue"), edgecolor="black")
-        ax.set_xlabel(x_label)
-        ax.set_ylabel("Frequency")
-
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_title(title)
+    ax.plot(df["date"], df["cumulative_sales"], color="red", linewidth=2)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Cumulative Sales")
+    ax.set_title("Cumulative Sales Over Time")
     ax.grid(True)
     fig.tight_layout()
+    return encode_image_to_data_uri(fig)
 
+def generate_precip_histogram(precip_values):
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.hist(precip_values, bins=10, color="orange", edgecolor="black")
+    ax.set_xlabel("Precipitation Amount")
+    ax.set_ylabel("Frequency")
+    ax.set_title("Precipitation Histogram")
+    ax.grid(True)
+    fig.tight_layout()
     return encode_image_to_data_uri(fig)
 
 # ==== GPT HELPERS ====
@@ -168,7 +174,7 @@ def generate_code(prompt: str) -> str:
         "- Assign the final result to a variable named result_json.\n"
         "- The format of result_json must match exactly the format requested in the question.\n"
         "- Do not print anything. No explanations, no markdown, no logs.\n"
-        "- Use only built-in Python libraries (no pip installs), except for pandas and numpy if needed for data manipulation.\n"
+        "- Use only built-in Python libraries (no pip installs).\n"
         "- Output ONLY the Python code, nothing else."
     )
     response = client.responses.create(model="gpt-5-nano", input=full_prompt)
@@ -176,7 +182,7 @@ def generate_code(prompt: str) -> str:
 
 def execute_code(code: str):
     try:
-        namespace = {"pd": pd, "np": np}
+        namespace = {}
         exec(code, namespace)
         if "result_json" in namespace:
             return namespace["result_json"], None, code
@@ -187,7 +193,7 @@ def execute_code(code: str):
             return result, None, code
         return None, "No 'result_json' variable or callable main() found", code
     except Exception as e:
-        return None, f"Execution error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}", code
+        return None, f"Execution error: {str(e)}", code
 
 async def feedback_loop(prompt: str, max_attempts=4):
     error_message = ""
@@ -237,24 +243,30 @@ async def analyze(request: Request):
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
 
         if json_result is not None:
-            # Check for a generic plot request
-            if "plot_request" in json_result and isinstance(json_result["plot_request"], dict):
-                plot_data_uri = generate_dynamic_plot(json_result["plot_request"])
-                if plot_data_uri:
-                    json_result["plot_uri"] = plot_data_uri
-                del json_result["plot_request"]
+            if "edges" in json_result and isinstance(json_result["edges"], list):
+                json_result["network_graph"] = generate_network_graph(json_result["edges"])
+                json_result["degree_histogram"] = generate_degree_histogram(json_result["edges"])
+                del json_result["edges"]
+
+            if "cumulative_sales_data" in json_result:
+                dates = [row["date"] for row in json_result["cumulative_sales_data"]]
+                sales = [row["sales"] for row in json_result["cumulative_sales_data"]]
+                json_result["cumulative_sales_chart"] = generate_cumulative_sales_chart(dates, sales)
+                del json_result["cumulative_sales_data"]
+
+            if "precip_data" in json_result:
+                json_result["precip_histogram"] = generate_precip_histogram(json_result["precip_data"])
+                del json_result["precip_data"]
 
             return JSONResponse(content=json_result)
 
-        # Fallback to direct chat completion if feedback loop fails
         fallback_response = call_openai_chat(prompt)
         try:
             parsed = json.loads(fallback_response)
-            if "plot_request" in parsed and isinstance(parsed["plot_request"], dict):
-                plot_data_uri = generate_dynamic_plot(parsed["plot_request"])
-                if plot_data_uri:
-                    parsed["plot_uri"] = plot_data_uri
-                del parsed["plot_request"]
+            if "edges" in parsed and isinstance(parsed["edges"], list):
+                parsed["network_graph"] = generate_network_graph(parsed["edges"])
+                parsed["degree_histogram"] = generate_degree_histogram(parsed["edges"])
+                del parsed["edges"]
             return JSONResponse(content=parsed)
         except json.JSONDecodeError:
             return JSONResponse(status_code=500, content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response})
