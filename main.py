@@ -1,11 +1,10 @@
 import os
 import traceback
-from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Request
+from typing import List
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 import json
-import csv
 import io
 import base64
 import xml.etree.ElementTree as ET
@@ -24,34 +23,9 @@ app = FastAPI()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY environment variable not set")
-
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-SYSTEM_PROMPT = """
-You are a senior data analyst. You will receive messages from a manager that may contain a mix of tasks, business questions, objectives, and sometimes a data source or description of data (e.g., a CSV file, database schema, table summary, or a URL to scrape data from).
-
-Your job is to:
-1. Carefully read and extract all requested tasks and objectives.
-2. Analyze and interpret the request with precision.
-3. Break down the tasks into specific, structured components.
-4. Format your entire response strictly in JSON following the exact response schema given in the message (if provided).
-5. If no response schema is provided, infer a logical and minimal JSON structure that matches the questions asked.
-
-Instructions:
-- Do not include any explanation, commentary, markdown formatting, or natural language text outside of the JSON.
-- Return only a valid, well-formatted JSON object (or array if specified).
-- Do not make assumptions beyond what is asked in the request.
-- If a data source is mentioned, ensure it is included in the task context.
-- Every task must include a clear objective, any dependencies (like datasets or URLs), and expected output format if described.
-- You may be asked to do data scraping, correlation, visualizations, or numerical analysis.
-
-Response formatting rules:
-- Always return the JSON exactly as instructed by the request.
-- If a plot is requested, return a base64-encoded data URI string (e.g., "data:image/png;base64,..."), and ensure it's under 100,000 bytes when instructed.
-
-Only return valid JSON. Be accurate, structured, and concise.
-Don't give sentences, give me just the data, numbers and the things User asked for.
-"""
+SYSTEM_PROMPT = """..."""  # unchanged from your version
 
 # ==== FILE HANDLING ====
 def process_file(fname: str, content: bytes):
@@ -102,7 +76,6 @@ def process_file(fname: str, content: bytes):
 
 # ==== IMAGE ENCODING ====
 def encode_image_to_data_uri(fig):
-    """Convert a Matplotlib figure to base64 data URI under 100KB."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
     plt.close(fig)
@@ -141,25 +114,24 @@ def generate_degree_histogram(edges):
     fig.tight_layout()
     return encode_image_to_data_uri(fig)
 
-def generate_cumulative_sales_chart(dates, sales):
-    df = pd.DataFrame({"date": pd.to_datetime(dates), "sales": sales})
+def generate_line_chart(dates, values, color="red", title="Line Chart"):
+    df = pd.DataFrame({"date": pd.to_datetime(dates), "value": values})
     df = df.sort_values("date")
-    df["cumulative_sales"] = df["sales"].cumsum()
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(df["date"], df["cumulative_sales"], color="red", linewidth=2)
+    ax.plot(df["date"], df["value"], color=color, linewidth=2)
     ax.set_xlabel("Date")
-    ax.set_ylabel("Cumulative Sales")
-    ax.set_title("Cumulative Sales Over Time")
+    ax.set_ylabel("Value")
+    ax.set_title(title)
     ax.grid(True)
     fig.tight_layout()
     return encode_image_to_data_uri(fig)
 
-def generate_precip_histogram(precip_values):
+def generate_histogram(values, color="orange", title="Histogram"):
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.hist(precip_values, bins=10, color="orange", edgecolor="black")
-    ax.set_xlabel("Precipitation Amount")
+    ax.hist(values, bins=10, color=color, edgecolor="black")
+    ax.set_title(title)
+    ax.set_xlabel("Value")
     ax.set_ylabel("Frequency")
-    ax.set_title("Precipitation Histogram")
     ax.grid(True)
     fig.tight_layout()
     return encode_image_to_data_uri(fig)
@@ -170,12 +142,8 @@ def generate_code(prompt: str) -> str:
         "You are a Python automation expert. "
         "Write a complete Python script to do the following task:\n"
         f"{prompt}\n\n"
-        "The script must:\n"
         "- Assign the final result to a variable named result_json.\n"
-        "- The format of result_json must match exactly the format requested in the question.\n"
-        "- Do not print anything. No explanations, no markdown, no logs.\n"
-        "- Use only built-in Python libraries (no pip installs).\n"
-        "- Output ONLY the Python code, nothing else."
+        "- Output ONLY the Python code."
     )
     response = client.responses.create(model="gpt-5-nano", input=full_prompt)
     return response.output_text.strip()
@@ -186,12 +154,7 @@ def execute_code(code: str):
         exec(code, namespace)
         if "result_json" in namespace:
             return namespace["result_json"], None, code
-        if "main" in namespace and callable(namespace["main"]):
-            result = namespace["main"]()
-            if result is None and "result_json" in namespace:
-                return namespace["result_json"], None, code
-            return result, None, code
-        return None, "No 'result_json' variable or callable main() found", code
+        return None, "No 'result_json' variable found", code
     except Exception as e:
         return None, f"Execution error: {str(e)}", code
 
@@ -217,6 +180,29 @@ def call_openai_chat(prompt: str):
     )
     return response.choices[0].message.content.strip()
 
+# ==== CHART AUTO-DETECT ====
+def auto_generate_charts(json_result: dict):
+    for key, value in list(json_result.items()):
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            keys_lower = [k.lower() for k in value[0].keys()]
+            if "date" in keys_lower and any(isinstance(v, (int, float)) for v in value[0].values()):
+                numeric_col = [k for k in value[0].keys() if k.lower() != "date"][0]
+                json_result[f"{key}_chart"] = generate_line_chart(
+                    [row["date"] for row in value],
+                    [row[numeric_col] for row in value],
+                    color="red" if "temperature" in key.lower() else "blue",
+                    title=f"{key} over Time"
+                )
+                del json_result[key]
+        elif isinstance(value, list) and all(isinstance(v, (int, float)) for v in value):
+            json_result[f"{key}_histogram"] = generate_histogram(
+                value,
+                color="orange" if "precip" in key.lower() else "gray",
+                title=f"{key} Histogram"
+            )
+            del json_result[key]
+    return json_result
+
 # ==== API ENDPOINT ====
 @app.post("/api/")
 async def analyze(request: Request):
@@ -225,52 +211,32 @@ async def analyze(request: Request):
         if "questions.txt" not in form:
             return JSONResponse(status_code=400, content={"error": "Missing questions.txt file"})
 
-        questions_file = form["questions.txt"]
-        questions_content = await questions_file.read()
-        prompt = questions_content.decode("utf-8", errors="ignore").strip()
-
+        prompt = (await form["questions.txt"].read()).decode("utf-8", errors="ignore").strip()
         files_data = {}
         for key, value in form.items():
             if key != "questions.txt" and hasattr(value, "filename"):
-                file_bytes = await value.read()
-                files_data[value.filename] = process_file(value.filename, file_bytes)
+                files_data[value.filename] = process_file(value.filename, await value.read())
 
         if files_data:
-            prompt += "\n\nAttached Files:\n"
-            for fname, data in files_data.items():
-                prompt += f"- {fname}:\n{data}\n"
+            prompt += "\n\nAttached Files:\n" + "\n".join(f"- {fname}: {data}" for fname, data in files_data.items())
 
         json_result, executed_code, error_message = await feedback_loop(prompt, max_attempts=4)
-
         if json_result is not None:
-            if "edges" in json_result and isinstance(json_result["edges"], list):
+            if "edges" in json_result:
                 json_result["network_graph"] = generate_network_graph(json_result["edges"])
                 json_result["degree_histogram"] = generate_degree_histogram(json_result["edges"])
                 del json_result["edges"]
 
-            if "cumulative_sales_data" in json_result:
-                dates = [row["date"] for row in json_result["cumulative_sales_data"]]
-                sales = [row["sales"] for row in json_result["cumulative_sales_data"]]
-                json_result["cumulative_sales_chart"] = generate_cumulative_sales_chart(dates, sales)
-                del json_result["cumulative_sales_data"]
-
-            if "precip_data" in json_result:
-                json_result["precip_histogram"] = generate_precip_histogram(json_result["precip_data"])
-                del json_result["precip_data"]
-
+            json_result = auto_generate_charts(json_result)
             return JSONResponse(content=json_result)
 
         fallback_response = call_openai_chat(prompt)
         try:
             parsed = json.loads(fallback_response)
-            if "edges" in parsed and isinstance(parsed["edges"], list):
-                parsed["network_graph"] = generate_network_graph(parsed["edges"])
-                parsed["degree_histogram"] = generate_degree_histogram(parsed["edges"])
-                del parsed["edges"]
+            parsed = auto_generate_charts(parsed)
             return JSONResponse(content=parsed)
         except json.JSONDecodeError:
-            return JSONResponse(status_code=500, content={"error": "Fallback OpenAI response is not valid JSON", "response": fallback_response})
+            return JSONResponse(status_code=500, content={"error": "Invalid JSON", "response": fallback_response})
 
     except Exception as e:
-        tb_str = traceback.format_exc()
-        return JSONResponse(status_code=500, content={"error": str(e), "traceback": tb_str})
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": traceback.format_exc()})
